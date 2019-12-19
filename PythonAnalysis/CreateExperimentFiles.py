@@ -1,9 +1,10 @@
 from InSituToolkit.imaging_database import write_experiment
+from .helpers import getPositions, getIDs
 import imaging_db.database.db_operations as db_ops
 import imaging_db.filestorage.s3_storage as s3_storage
 import imaging_db.filestorage.local_storage as local_storage
 import imaging_db.utils.db_utils as db_utils
-import os
+import os, csv, pickle
 
 # information taken from InSituToolkit notebooks, which happened to use the LungInsitu dataset
 # we must pull all image id's that contain "SDG" and make an experiment for them.
@@ -12,63 +13,58 @@ import os
 spot_channels = ['Opal_570_low', 'Opal_620', 'Opal_690']
 nuc_channel = ['DAPI']
 db_credentials = '/Users/andrew.cote/Documents/db_credentials.json'
+credentials_str = db_utils.get_connection_str(db_credentials)
+
+'''
+We want to save the experiment files in a specific format / directory naming convention, i.e.
+
+in "/Users/andrew.cote/Documents/In-Situ_Transcriptomics/LungInSitu/experiments/" 
+
+The list of experiments reads like
+
+/TH134_E2_B1_assay2/roi1/<experiment_files>
+/TH134_E2_B1_assay2/roi2/<experiment_files>
 
 
-# accessing imagingDB and pulling the dataset id's. What we want is a set of unique id's that we then
-# write into experiment files
 
-def getIDs(db_credentials, string):
-    credentials_str = db_utils.get_connection_str(db_credentials)
-    with db_ops.session_scope(credentials_str) as session:
-        frames = session.query(db_ops.DataSet)
+'''
 
-    set_of_ids = list()
-    for f in frames:
-        name = f.dataset_serial
-        if string in name:
-            set_of_ids.append(name)
-    return list(set_of_ids)
+base_path = "/Users/andrew.cote/Documents/In-Situ_Transcriptomics/LungInSitu/experiments/"
+list_of_experiments = []
 
+csv_file = open('metadata_lung.csv')
+csv_reader = csv.reader(csv_file, delimiter=',')
+line_count = 0
+for row in csv_reader:
+    if line_count > 0 and line_count < 2:
 
-def getPositions(db_credentials, dataset_identifier):
-    credentials_str = db_utils.get_connection_str(db_credentials)
+        # extract relevant columns from the csv file
+        dataset_id = row[0]
+        roi = row[-1]
+        full_name = row[2]
 
-    with db_ops.session_scope(credentials_str) as session:
-        frames = session.query(db_ops.Frames) \
-            .join(db_ops.FramesGlobal) \
-            .join(db_ops.DataSet) \
-            .filter(db_ops.DataSet.dataset_serial == dataset_identifier)
-    positions = set()
-    for f in frames:
-        positions.add(f.pos_idx)
-    return list(positions)
+        # construct the directory name according to the convention specified:
+        idx = full_name.find('assay')
+        dir_name = full_name[0:idx + 6]
+        save_path = base_path + dir_name
+        save_path_exp = save_path + '/roi' + roi + '/'
 
-list_of_datasets = getIDs(db_credentials, 'SDG')
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
 
-# Construct experiment files for each dataset, finding the positions as well
+        if not(os.path.exists(save_path_exp)):
+            os.mkdir(save_path_exp)
 
-list_of_datasets = getIDs(db_credentials, 'SDG')
+            # pull positions from database and write the experiment file
+            positions = getPositions(db_credentials, dataset_id)
 
-for dataset_identifier in list_of_datasets:
-    pos = getPositions(db_credentials, dataset_identifier)
+            write_experiment(db_credentials, save_path_exp, [dataset_id],
+                             spot_channels=spot_channels, nuc_channels=nuc_channel,
+                             positions=positions
+                             )
+            print("wrote experiment to " + save_path_exp)
+        list_of_experiments.append(save_path_exp)
 
-    # Saving experiment file to the repo
-    output_dir = "/Users/andrew.cote/Documents/In-Situ_Transcriptomics/LungInSitu/experiments/" + dataset_identifier + "/"
+    line_count += 1
 
-    # first try to make the directory
-    try:
-        os.mkdir(output_dir)
-    except OSError:
-        print("Experiment already exists: " + dataset_identifier)
-    else:
-        # print("Successfully created the directory %s " % output_dir)    # write the experiment
-        try:
-            write_experiment(db_credentials, output_dir, dataset_identifier,
-                         spot_channels=spot_channels, nuc_channels=nuc_channel,
-                         positions=pos
-                         )
-        except :
-            None
-        else:
-            print('Experiment created: ' + dataset_identifier)
-
+pickle.dump(list_of_experiments, open('list_of_experiments.p'), 'wb')
